@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/producto.dart';
 import 'package:flutter/services.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
-import '/services/anuncios_service.dart';
+import '../services/anuncios_service.dart';
 
 class PrimeraLetraMayusculaFormatter extends TextInputFormatter {
   @override
@@ -19,7 +18,6 @@ class _CampoTextoBonito extends StatelessWidget {
   final TextEditingController controller;
   final TextInputType? keyboardType;
   final String label;
-  final String? hint;
   final IconData icon;
   final List<TextInputFormatter>? inputFormatters;
 
@@ -27,7 +25,6 @@ class _CampoTextoBonito extends StatelessWidget {
     required this.controller,
     this.keyboardType,
     required this.label,
-    this.hint,
     required this.icon,
     this.inputFormatters,
   });
@@ -39,7 +36,6 @@ class _CampoTextoBonito extends StatelessWidget {
       keyboardType: keyboardType,
       decoration: InputDecoration(
         labelText: label,
-        hintText: hint,
         filled: true,
         fillColor: Colors.grey[50],
         prefixIcon: Icon(icon, color: Colors.green[700]),
@@ -72,87 +68,6 @@ class ProductosScreen extends StatefulWidget {
 
 class _ProductosScreenState extends State<ProductosScreen> {
 
-  BannerAd? _bannerAd;
-  bool _isBannerAdReady = false;
-
-  InterstitialAd? _interstitialAd;
-  bool _isInterstitialAdReady = false;
-
-  int _productosExtraPermitidos = 0;
-
-  @override
-  void initState() {
-    super.initState();
-
-    // Inicializar banner
-    _bannerAd = BannerAd(
-      adUnitId: 'ca-app-pub-5644898978189989/9036593169', // Reemplaza por el tuyo
-      size: AdSize.banner,
-      request: AdRequest(),
-      listener: BannerAdListener(
-        onAdLoaded: (_) {
-          setState(() {
-            _isBannerAdReady = true;
-          });
-        },
-        onAdFailedToLoad: (ad, error) {
-          ad.dispose();
-        },
-      ),
-    )..load();
-
-    // Inicializar interstitial
-    InterstitialAd.load(
-      adUnitId: 'ca-app-pub-5644898978189989/2471184815', // Reemplaza por el tuyo
-      request: AdRequest(),
-      adLoadCallback: InterstitialAdLoadCallback(
-        onAdLoaded: (ad) {
-          _interstitialAd = ad;
-          _isInterstitialAdReady = true;
-        },
-        onAdFailedToLoad: (error) {
-          _isInterstitialAdReady = false;
-        },
-      ),
-    );
-  }
-
-  void _mostrarRewardedAd() {
-    RewardedAd.load(
-      adUnitId: 'ca-app-pub-3940256099942544/5224354917', // Reemplaza por tu ID real
-      request: AdRequest(),
-      rewardedAdLoadCallback: RewardedAdLoadCallback(
-        onAdLoaded: (RewardedAd ad) {
-          ad.show(
-            onUserEarnedReward: (ad, reward) {
-              setState(() {
-                _productosExtraPermitidos += 1;
-              });
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('¡Anuncio visto! Puedes agregar 1 producto extra.')),
-              );
-            },
-          );
-        },
-        onAdFailedToLoad: (LoadAdError error) {
-          showDialog(
-            context: context,
-            builder: (_) => AlertDialog(
-              title: Text("Error"),
-              content: Text("No se pudo cargar el anuncio. Intenta más tarde. Conectate a internet"),
-              actions: [
-                TextButton(
-                  child: Text("OK"),
-                  onPressed: () => Navigator.of(context).pop(),
-                )
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   void _mostrarAlertaProductoExistente(String nombre) {
     showDialog(
       context: context,
@@ -182,13 +97,13 @@ class _ProductosScreenState extends State<ProductosScreen> {
     final precioTexto = _precioController.text.replaceAll(',', '.');
     final precio = double.tryParse(precioTexto);
 
-    if (nombre.isEmpty || precio == null || stock < 0) {
+    if (nombre.isEmpty || precio == null || precio <= 0 || stock < 0) {
       // Mostrar un error si falta algún dato válido
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('Datos inválidos'),
-          content: const Text('Por favor, completa todos los campos correctamente.'),
+          content: const Text('Por favor, completa todos los campos correctamente. El precio debe ser mayor a 0.'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
@@ -199,6 +114,17 @@ class _ProductosScreenState extends State<ProductosScreen> {
       );
       return;
     }
+
+    // Verificar si el producto ya existe (ignorando mayúsculas/minúsculas)
+    final existe = _productosBox.values.any(
+      (p) => p.nombre.toLowerCase() == nombre.toLowerCase()
+    );
+
+    if (existe) {
+      _mostrarAlertaProductoExistente(nombre);
+      return;
+    }
+
     final nuevoProducto = Producto(
       nombre: nombre,
       precio: precio,
@@ -208,7 +134,7 @@ class _ProductosScreenState extends State<ProductosScreen> {
 
     Navigator.pop(context); // cerrar el diálogo
 
-    // Limpiar campos si lo deseas
+    // Limpiar campos
     _nombreController.clear();
     _precioController.clear();
     _stockController.clear();
@@ -362,8 +288,40 @@ class _ProductosScreenState extends State<ProductosScreen> {
   }
 
   void _eliminarProducto(int index) {
-    _productosBox.deleteAt(index);
-    setState(() {});
+    final producto = _productosBox.getAt(index);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Eliminar Producto'),
+        content: Text('¿Estás seguro de que quieres eliminar "${producto?.nombre}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () {
+              _productosBox.deleteAt(index);
+              Navigator.pop(context);
+              setState(() {});
+            },
+            child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _intentarAbrirDialogoNuevo() {
+    final limiteBase = 7;
+    final extra = AnunciosService().productosExtra;
+    final totalPermitido = limiteBase + extra;
+
+    if (_productosBox.length >= totalPermitido) {
+      _mostrarDialogoLimiteConOpcionRewarded();
+    } else {
+      _mostrarDialogoNuevoProducto();
+    }
   }
 
   @override
@@ -435,16 +393,10 @@ class _ProductosScreenState extends State<ProductosScreen> {
         backgroundColor: Colors.green[700],
         icon: const Icon(Icons.add),
         label: const Text('Agregar'),
-        onPressed: _mostrarDialogoNuevoProducto,
+        onPressed: _intentarAbrirDialogoNuevo,
       ),
 
-      bottomNavigationBar: _isBannerAdReady
-          ? SizedBox(
-        height: _bannerAd!.size.height.toDouble(),
-        width: _bannerAd!.size.width.toDouble(),
-        child: AdWidget(ad: _bannerAd!),
-      )
-          : null,
+      bottomNavigationBar: AnunciosService().obtenerBannerWidget(),
     );
   }
 }
