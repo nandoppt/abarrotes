@@ -1,15 +1,14 @@
 import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
 import 'package:image_picker/image_picker.dart';
 import '../models/configuracion.dart';
+import '../models/producto.dart';
+import '../services/backup_service.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:archive/archive_io.dart';
 import 'package:path/path.dart' as p;
-import 'package:file_selector/file_selector.dart';
-import 'package:archive/archive.dart';
-import 'package:archive/archive_io.dart';
-import 'dart:convert';
+
 class _CampoTextoBonito extends StatelessWidget {
   final TextEditingController controller;
   final TextInputType? keyboardType;
@@ -60,7 +59,8 @@ class AjustesScreen extends StatefulWidget {
   const AjustesScreen({super.key});
 
   @override
-  State<AjustesScreen> createState() => _AjustesScreenState();}
+  State<AjustesScreen> createState() => _AjustesScreenState();
+}
 
 class _AjustesScreenState extends State<AjustesScreen> {
   final _nombreController = TextEditingController();
@@ -70,8 +70,9 @@ class _AjustesScreenState extends State<AjustesScreen> {
   final _directorioController = TextEditingController();
   final _bienvenidaController = TextEditingController();
 
-  final Box<Configuracion> _configBox = Hive.box<Configuracion>('configuracionBox');
+  Box<Configuracion> get _configBox => Hive.box<Configuracion>('configuracionBox');
   File? _logo;
+  final BackupService _backupService = BackupService();
 
 
   @override
@@ -91,125 +92,152 @@ class _AjustesScreenState extends State<AjustesScreen> {
       }
     }
   }
+
+  @override
+  void dispose() {
+    _nombreController.dispose();
+    _ivaController.dispose();
+    _telefonoController.dispose();
+    _direccionController.dispose();
+    _directorioController.dispose();
+    _bienvenidaController.dispose();
+    super.dispose();
+  }
+
   Future<void> _realizarBackup() async {
     final config = _configBox.get('actual');
     if (config == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No hay configuración para respaldar')),
+        const SnackBar(content: Text('No hay configuraciÃ³n para respaldar')),
       );
       return;
     }
 
-    final archive = Archive();
-
-    // Agregar configuración como JSON simple
-    final configJson = '''
-    {
-      "nombreNegocio": "${config.nombreNegocio}",
-       "iva": ${config.iva},
-        "telefono": "${config.telefono}",
-          "direccion": "${config.direccion}",
-              "directorioDescarga": "${config.directorioDescarga ?? ''}"
-    }''';
-    archive.addFile(ArchiveFile.string('configuracion.json', configJson));
-
-    // Agregar logo si existe
-    if (config.logoPath != null && File(config.logoPath!).existsSync()) {
-      final logoFile = File(config.logoPath!);
-      final logoBytes = logoFile.readAsBytesSync();
-      archive.addFile(ArchiveFile('logo.png', logoBytes.length, logoBytes));
-    }
-
-    // Agregar archivos PDF y Excel si existen en carpeta destino
-    Directory dirDestino;
-    if (config.directorioDescarga != null && Directory(config.directorioDescarga!).existsSync()) {
-      dirDestino = Directory(config.directorioDescarga!);
-    } else {
-      dirDestino = await getApplicationDocumentsDirectory();
-    }
-
-    final List<FileSystemEntity> archivos = dirDestino.listSync();
-    for (var file in archivos) {
-      if (file is File && (file.path.endsWith('.pdf') || file.path.endsWith('.xlsx'))) {
-        final bytes = file.readAsBytesSync();
-        archive.addFile(ArchiveFile(p.basename(file.path), bytes.length, bytes));
-      }
-    }
-
-    // Crear archivo ZIP
-    final zipBytes = ZipEncoder().encode(archive);
-    final backupFile = File(p.join(dirDestino.path, 'backup_abarrotes.zip'));
-    await backupFile.writeAsBytes(zipBytes!);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Backup guardado en: ${backupFile.path}')),
+    final dirPath = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Selecciona una carpeta para guardar el backup',
     );
+    if (dirPath == null) return;
+
+    try {
+      final docsDir = await getApplicationDocumentsDirectory();
+      final backupFile = await _backupService.createBackup(
+        sourceDocumentsDir: docsDir,
+        destinationDir: Directory(dirPath),
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Backup guardado en: ${backupFile.path}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error realizando backup: $e')),
+      );
+    }
   }
 
   Future<void> _restaurarBackup() async {
-    // Selecciona el archivo ZIP con file_selector
-    final XTypeGroup typeGroup = XTypeGroup(
-      label: 'zip',
-      extensions: ['zip'],
+    final result = await FilePicker.platform.pickFiles(
+      dialogTitle: 'Selecciona el archivo ZIP del backup',
+      type: FileType.custom,
+      allowedExtensions: ['zip'],
+      withData: false,
     );
-    final XFile? xfile = await openFile(acceptedTypeGroups: [typeGroup]);
-    if (xfile == null) return;
+    if (result == null || result.files.isEmpty) return;
 
-    final zipFile = File(xfile.path);
-    final bytes = await zipFile.readAsBytes(); // Usa async/await siempre que puedas
-    final archive = ZipDecoder().decodeBytes(bytes);
+    final pickedPath = result.files.single.path;
+    if (pickedPath == null) return;
 
-    String? configJson;
-    File? logoRecuperado;
+    try {
+      final zipFile = File(pickedPath);
+      final docsDir = await getApplicationDocumentsDirectory();
 
-    final dir = await getApplicationDocumentsDirectory();
+      // Cerrar Hive para liberar locks antes de reemplazar archivos.
+      await Hive.close();
 
-    for (final file in archive) {
-      final data = file.content as List<int>;
-
-      if (file.name == 'configuracion.json') {
-        configJson = utf8.decode(data);
-      } else if (file.name == 'logo.png') {
-        final logoFile = File('${dir.path}/logo_restaurado.png');
-        await logoFile.writeAsBytes(data);
-        logoRecuperado = logoFile;
-      } else if (file.name.endsWith('.pdf') || file.name.endsWith('.xlsx')) {
-        final destino = File('${dir.path}/${file.name}');
-        await destino.writeAsBytes(data);
-      }
-    }
-
-    if (configJson != null) {
-      final decoded = jsonDecode(configJson);
-
-      final nuevaConfig = Configuracion(
-        nombreNegocio: decoded['nombreNegocio'] ?? '',
-        iva: decoded['iva']?.toDouble() ?? 0,
-        telefono: decoded['telefono'] ?? '',
-        direccion: decoded['direccion'] ?? '',
-        logoPath: logoRecuperado?.path,
-        directorioDescarga: decoded['directorioDescarga'],
+      await _backupService.restoreBackup(
+        zipFile: zipFile,
+        targetDocumentsDir: docsDir,
       );
 
-      _configBox.put('actual', nuevaConfig);
+      await _reabrirHive(docsDir);
+      await _repararRutasImagenes(docsDir);
 
+      final config = _configBox.get('actual');
+
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Backup restaurado correctamente')),
       );
 
       setState(() {
-        _nombreController.text = nuevaConfig.nombreNegocio;
-        _ivaController.text = nuevaConfig.iva.toString();
-        _telefonoController.text = nuevaConfig.telefono;
-        _direccionController.text = nuevaConfig.direccion;
-        _directorioController.text = nuevaConfig.directorioDescarga ?? '';
-        _logo = logoRecuperado;
+        _nombreController.text = config?.nombreNegocio ?? '';
+        _ivaController.text = (config?.iva ?? 0).toString();
+        _telefonoController.text = config?.telefono ?? '';
+        _direccionController.text = config?.direccion ?? '';
+        _directorioController.text = config?.directorioDescarga ?? '';
+
+        final logoPath = config?.logoPath;
+        _logo = (logoPath != null && File(logoPath).existsSync()) ? File(logoPath) : null;
       });
-    } else {
+    } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Backup inválido: configuración no encontrada')),
+        SnackBar(content: Text('Error restaurando backup: $e')),
       );
     }
+  }
+
+  Future<void> _reabrirHive(Directory docsDir) async {
+    Hive.init(docsDir.path);
+
+    if (!Hive.isAdapterRegistered(0)) {
+      Hive.registerAdapter(ProductoAdapter());
+    }
+    if (!Hive.isAdapterRegistered(1)) {
+      Hive.registerAdapter(ConfiguracionAdapter());
+    }
+
+    await Hive.openBox('configuracion');
+    await Hive.openBox<Configuracion>('configuracionBox');
+    await Hive.openBox<Producto>('productosBox');
+    await Hive.openBox('ventasBox');
+  }
+
+  Future<void> _repararRutasImagenes(Directory docsDir) async {
+    final config = _configBox.get('actual');
+    if (config != null && config.logoPath != null) {
+      final newLogo = _mapToDocumentsPath(docsDir, config.logoPath!);
+      if (newLogo != null && newLogo != config.logoPath) {
+        config.logoPath = newLogo;
+        await config.save();
+      }
+    }
+
+    final productosBox = Hive.box<Producto>('productosBox');
+    for (final prod in productosBox.values) {
+      final old = prod.imagenPath;
+      if (old == null || old.isEmpty) continue;
+
+      final newPath = _mapToProductsPath(docsDir, old) ?? _mapToDocumentsPath(docsDir, old);
+      if (newPath != null && newPath != old) {
+        prod.imagenPath = newPath;
+        await prod.save();
+      }
+    }
+  }
+
+  String? _mapToDocumentsPath(Directory docsDir, String oldPath) {
+    final name = p.basename(oldPath);
+    final candidate = p.join(docsDir.path, name);
+    return File(candidate).existsSync() ? candidate : null;
+  }
+
+  String? _mapToProductsPath(Directory docsDir, String oldPath) {
+    final name = p.basename(oldPath);
+    final candidate = p.join(docsDir.path, 'productos', name);
+    return File(candidate).existsSync() ? candidate : null;
   }
 
 
@@ -230,7 +258,7 @@ class _AjustesScreenState extends State<AjustesScreen> {
 
     if (ruta.isNotEmpty && !Directory(ruta).existsSync()) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ruta de descarga no válida')),
+        const SnackBar(content: Text('Ruta de descarga no vÃ¡lida')),
       );
       return;
     }
@@ -247,7 +275,7 @@ class _AjustesScreenState extends State<AjustesScreen> {
     _configBox.put('actual', config);
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Configuración guardada')),
+      const SnackBar(content: Text('ConfiguraciÃ³n guardada')),
     );
   }
 
@@ -281,7 +309,7 @@ class _AjustesScreenState extends State<AjustesScreen> {
           title: const Text(
             'Ajustes',
             style: TextStyle(
-              fontSize: 26,            // Tamaño de fuente más grande
+              fontSize: 26,            // TamaÃ±o de fuente mÃ¡s grande
               fontWeight: FontWeight.bold,
               color: Colors.white,     // Color del texto
               letterSpacing: 1.1,      // Espaciado entre letras (opcional)
@@ -343,7 +371,7 @@ class _AjustesScreenState extends State<AjustesScreen> {
                   ],
                 ),
                 const SizedBox(height: 16),
-                // CAMPOS DE CONFIGURACIÓN (modernos y bonitos)
+                // CAMPOS DE CONFIGURACIÃ“N (modernos y bonitos)
                /* _CampoTextoBonito(
                   controller: _ivaController,
                   keyboardType: TextInputType.number,
@@ -354,13 +382,13 @@ class _AjustesScreenState extends State<AjustesScreen> {
                 _CampoTextoBonito(
                   controller: _telefonoController,
                   keyboardType: TextInputType.phone,
-                  label: 'Teléfono',
+                  label: 'TelÃ©fono',
                   icon: Icons.phone,
                 ),
                 const SizedBox(height: 15),
                 _CampoTextoBonito(
                   controller: _direccionController,
-                  label: 'Dirección',
+                  label: 'DirecciÃ³n',
                   icon: Icons.location_on,
                 ),
                 const SizedBox(height: 15),

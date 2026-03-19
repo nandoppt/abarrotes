@@ -13,9 +13,13 @@ class Producto extends HiveObject {
   @HiveField(2)
   int stock;
 
+  @HiveField(3)
+  String? imagenPath; // 👈 NUEVO
+
   Producto({
     required this.nombre,
     required this.precio,
     required this.stock,
+    this.imagenPath,
   });
 }

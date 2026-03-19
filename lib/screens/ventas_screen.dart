@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
 import '../models/producto.dart';
@@ -12,6 +14,9 @@ class VentasScreen extends StatefulWidget {
 class _VentasScreenState extends State<VentasScreen> {
   final Box<Producto> _productosBox = Hive.box<Producto>('productosBox');
   final Box _ventasBox = Hive.box('ventasBox');
+
+  TextEditingController _searchController = TextEditingController();
+  String _searchText = '';
 
   List<Map<String, dynamic>> _carrito = [];
   double _totalCarrito = 0;
@@ -162,6 +167,30 @@ class _VentasScreenState extends State<VentasScreen> {
                         // Primera línea: nombre y total
                         Row(
                           children: [
+                            /// 🖼️ Imagen en carrito de compra
+                            prod.imagenPath != null && File(prod.imagenPath!).existsSync()
+                                ? ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.file(
+                                File(prod.imagenPath!),
+                                width: 40,
+                                height: 40,
+                                fit: BoxFit.cover,
+                              ),
+                            )
+                                : Container(
+                              width: 45,
+                              height: 45,
+                              decoration: BoxDecoration(
+                                color: Colors.grey[200],
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(Icons.image_not_supported, size: 20),
+                            ),
+
+                            const SizedBox(width: 10),
+
+                            /// 🧾 NOMBRE
                             Expanded(
                               child: Text(
                                 prod.nombre,
@@ -170,6 +199,8 @@ class _VentasScreenState extends State<VentasScreen> {
                                 maxLines: 1,
                               ),
                             ),
+
+                            /// 💰 TOTAL
                             Text(
                               '\$${total.toStringAsFixed(2)}',
                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
@@ -328,6 +359,10 @@ class _VentasScreenState extends State<VentasScreen> {
   Widget build(BuildContext context) {
     final productos = _productosBox.values.toList();
 
+    final productosFiltrados = productos.where((p) {
+      return p.nombre.toLowerCase().contains(_searchText.toLowerCase());
+    }).toList();
+
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.green[700],
@@ -346,65 +381,137 @@ class _VentasScreenState extends State<VentasScreen> {
       body: Padding(
         padding: const EdgeInsets.all(18),
         child: productos.isEmpty
-            ? Center(child: Text('No hay productos registrados', style: TextStyle(color: Colors.grey[600])))
-            : ListView.builder(
-          itemCount: productos.length,
-          itemBuilder: (context, i) {
-            final producto = productos[i];
-            final stockBajo = producto.stock < 5;
-            return Card(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-              elevation: 5,
-              margin: const EdgeInsets.symmetric(vertical: 8),
-              child: ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: stockBajo ? Colors.red[100] : Colors.green[100],
-                  child: Icon(Icons.shopping_cart, color: stockBajo ? Colors.red : Colors.green[700]),
-                ),
-                title: Text(producto.nombre, style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Stock: ${producto.stock}',
-                      style: TextStyle(color: stockBajo ? Colors.red : Colors.black87),
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Text(
-                          '\$${producto.precio.toStringAsFixed(2)}',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            icon: const Icon(Icons.point_of_sale, size: 17),
-                            label: const Text('Vender', style: TextStyle(fontSize: 14)),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green[400],
-                              minimumSize: const Size(80, 32),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                              padding: const EdgeInsets.symmetric(horizontal: 7),
-                            ),
-                            onPressed: producto.stock > 0
-                                ? () => _venderProducto(producto)
-                                : null,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-                
-              ),
-
-            );
-
-          },
-
+            ? Center(
+          child: Text(
+            'No hay productos registrados',
+            style: TextStyle(color: Colors.grey[600]),
+          ),
         )
-        ,
+            : Column(
+          children: [
+            // Campo de búsqueda
+            TextField(
+              controller: _searchController,
+              onChanged: (value) {
+                setState(() {
+                  _searchText = value;
+                });
+              },
+              decoration: InputDecoration(
+                hintText: 'Buscar producto...',
+                prefixIcon: const Icon(Icons.search, color: Colors.green),
+                suffixIcon: _searchText.isNotEmpty
+                    ? IconButton(
+                  icon: const Icon(Icons.clear),
+                  onPressed: () {
+                    _searchController.clear();
+                    setState(() {
+                      _searchText = '';
+                    });
+                  },
+                )
+                    : null,
+                filled: true,
+                fillColor: Colors.grey[100],
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // Lista de productos
+            Expanded(
+              child: productosFiltrados.isEmpty
+                  ? const Center(child: Text('No se encontraron productos'))
+                  : ListView.builder(
+                itemCount: productosFiltrados.length,
+                itemBuilder: (context, i) {
+                  final producto = productosFiltrados[i];
+                  final stockBajo = producto.stock < 5;
+
+                  return Card(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    elevation: 5,
+                    margin: const EdgeInsets.symmetric(vertical: 8),
+                    child: ListTile(
+                      ///Programacion de imagen en producto
+                      leading: producto.imagenPath != null &&
+                          File(producto.imagenPath!).existsSync()
+                          ? ClipRRect(
+                        borderRadius: BorderRadius.circular(10), // 👈 ajusta aquí
+                        child: Image.file(
+                          File(producto.imagenPath!),
+                          width: 60,
+                          height: 60,
+                          fit: BoxFit.cover,
+                        ),
+                      )
+                          : Container(
+                        width: 50,
+                        height: 50,
+                        decoration: BoxDecoration(
+                          color: Colors.green[100],
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(
+                          Icons.inventory,
+                          color: Colors.green[700],
+                        ),
+                      ),
+                      title: Text(
+                        producto.nombre,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Stock: ${producto.stock}',
+                            style: TextStyle(
+                              color: stockBajo ? Colors.red : Colors.black87,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Text(
+                                '\$${producto.precio.toStringAsFixed(2)}',
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  icon: const Icon(Icons.point_of_sale, size: 17),
+                                  label: const Text('Vender', style: TextStyle(fontSize: 14)),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.green[400],
+                                    foregroundColor: Colors.white, // Color del texto e icono
+                                    minimumSize: const Size(40, 32),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(horizontal: 7),
+                                  ),
+                                  onPressed: producto.stock > 0
+                                      ? () => _venderProducto(producto)
+                                      : null,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
       ),
       floatingActionButton: _carrito.isNotEmpty
           ? FloatingActionButton.extended(

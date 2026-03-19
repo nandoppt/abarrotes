@@ -20,19 +20,22 @@ class ProductoAdapter extends TypeAdapter<Producto> {
       nombre: fields[0] as String,
       precio: fields[1] as double,
       stock: fields[2] as int,
+      imagenPath: fields[3] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Producto obj) {
     writer
-      ..writeByte(3)
+      ..writeByte(4)
       ..writeByte(0)
       ..write(obj.nombre)
       ..writeByte(1)
       ..write(obj.precio)
       ..writeByte(2)
-      ..write(obj.stock);
+      ..write(obj.stock)
+      ..writeByte(3)
+      ..write(obj.imagenPath);
   }
 
   @override
